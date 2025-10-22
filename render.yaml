@@ -1,31 +1,42 @@
-# render.yaml
 services:
-  # Main API Service
+  # Backend API
   - type: web
-    name: merch-mvp-api
+    name: merch-backend
     runtime: node
-    region: oregon  # or your preferred region
-    plan: free  # or starter/standard
-    buildCommand: npm install && npm run build
+    plan: free
+    buildCommand: npm install
     startCommand: npm start
-    healthCheckPath: /api/v1/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 10000
+        value: 3000
+      - key: BASE_URL
+        sync: false
+      - key: BACKEND_ISSUER_PRIVATE_KEY
+        sync: false
       - key: API_KEY
-        generateValue: true  # Auto-generate secure key
+        sync: false
       - key: BASE_SEPOLIA_RPC_URL
         value: https://sepolia.base.org
-      - key: CHAIN_ID
-        value: 84532
-      # Add other env vars in Render Dashboard
+      - key: BASIC_MERCH_ADDRESS
+        sync: false
+      - key: MERCH_MANAGER_ADDRESS
+        sync: false
+      - key: PREMIUM_MERCH_ADDRESS
+        sync: false
+      - key: EAS_INTEGRATION_ADDRESS
+        sync: false
+      - key: DATABASE_TYPE
+        value: postgres
+      - key: METADATA_STORAGE_TYPE
+        value: ipfs
+      - key: PINATA_JWT
+        sync: false
 
-  # Redis Service
-  - type: redis
-    name: merch-mvp-redis
-    region: oregon
+databases:
+  # PostgreSQL Database
+  - name: merch-db
     plan: free
-    maxmemoryPolicy: allkeys-lru
-    ipAllowList: []  # empty = allow all
+    databaseName: merch
+    user: merch
