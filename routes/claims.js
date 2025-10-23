@@ -320,7 +320,7 @@ router.post('/redeem-reservation', requireApiKey, async (req, res) => {
 });
 
 // ==============================================
-// ADMIN ENDPOINTS (NEW)
+// ADMIN ENDPOINTS
 // ==============================================
 
 /**
@@ -436,6 +436,118 @@ router.post('/admin/add-sample-claims', requireApiKey, async (req, res) => {
 });
 
 /**
+ * @route   POST /api/admin/generate-bulk-claims
+ * @desc    Generate multiple claim codes at once (bulk generation)
+ * @access  Protected (requires API key)
+ */
+router.post('/admin/generate-bulk-claims', requireApiKey, async (req, res) => {
+  try {
+    const { count, prefix, eventName } = req.body;
+    
+    // Validate input
+    if (!count || count < 1 || count > 1000) {
+      return res.status(400).json({ 
+        error: 'Count must be between 1 and 1000' 
+      });
+    }
+    
+    // Event templates
+    const EVENTS = [
+      { name: 'Web3 Summit 2025', location: 'Lisbon' },
+      { name: 'NFT NYC 2025', location: 'New York' },
+      { name: 'ETH Denver 2025', location: 'Denver' },
+      { name: 'Token2049 Singapore', location: 'Singapore' },
+      { name: 'Consensus Austin', location: 'Austin' },
+      { name: 'EthCC Paris', location: 'Paris' },
+      { name: 'DevCon Bangkok', location: 'Bangkok' },
+      { name: 'Base Camp Miami', location: 'Miami' },
+      { name: 'Blockchain Week NYC', location: 'New York' },
+      { name: 'Web3 Conference Dubai', location: 'Dubai' }
+    ];
+    
+    const created = [];
+    const failed = [];
+    
+    console.log(`📦 Generating ${count} bulk claims...`);
+    
+    for (let i = 0; i < count; i++) {
+      try {
+        // Generate unique code
+        const codePrefix = prefix || 'BULK';
+        const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const numberPart = String(i).padStart(4, '0');
+        const code = `${codePrefix}-${randomPart}-${numberPart}`;
+        
+        // Select event (cycle through events or use provided eventName)
+        const event = eventName 
+          ? { name: eventName, location: '' }
+          : EVENTS[i % EVENTS.length];
+        
+        // Generate event ID
+        const eventId = ethers.hexlify(ethers.randomBytes(32));
+        
+        // Generate token URI
+        const tokenURI = `${process.env.BASE_URL || 'http://localhost:3000'}/api/token-metadata/${Date.now()}-${i}`;
+        
+        // Generate metadata
+        const MetadataService = require('../services/metadata-service');
+        const metadataService = new MetadataService(process.env.METADATA_STORAGE_TYPE || 'local');
+        
+        const metadata = metadataService.generateSBTMetadata(
+          Date.now() + i,
+          event.location ? `${event.name} - ${event.location}` : event.name,
+          '0x0000000000000000000000000000000000000000',
+          Math.floor(Date.now() / 1000)
+        );
+        
+        // Create claim in database
+        await db.createClaim({
+          code,
+          eventId,
+          tokenURI,
+          metadata
+        });
+        
+        created.push({ code, event: event.name });
+        
+        // Progress log every 50 codes
+        if ((i + 1) % 50 === 0) {
+          console.log(`   ✅ Generated ${i + 1}/${count} codes...`);
+        }
+        
+      } catch (error) {
+        // Skip duplicates silently, log other errors
+        if (error.code !== '23505') {
+          console.error(`   ❌ Error on code ${i + 1}:`, error.message);
+          failed.push({ index: i, error: error.message });
+        } else {
+          failed.push({ index: i, error: 'Duplicate code (skipped)' });
+        }
+      }
+    }
+    
+    console.log(`✅ Bulk generation complete: ${created.length} created, ${failed.length} failed`);
+    
+    return res.json({
+      success: true,
+      requested: count,
+      created: created.length,
+      failed: failed.length,
+      codes: created.slice(0, 10), // Return first 10 as sample
+      sample_codes: created.length > 10 ? created.slice(0, 10) : created,
+      errors: failed.slice(0, 5) // Return first 5 errors as sample
+    });
+    
+  } catch (error) {
+    console.error('❌ Error generating bulk claims:', error);
+    return res.status(500).json({ 
+      error: 'Failed to generate bulk claims',
+      details: error.message
+    });
+  }
+});
+
+/**
  * @route   GET /api/admin/list-claims
  * @desc    List all claims (admin only)
  * @access  Protected (requires API key)
@@ -444,9 +556,18 @@ router.get('/admin/list-claims', requireApiKey, async (req, res) => {
   try {
     const claims = await db.getAllClaims();
     
+    // Get statistics
+    const stats = {
+      total: claims.length,
+      used: claims.filter(c => c.used).length,
+      available: claims.filter(c => !c.used).length,
+      reserved: claims.filter(c => c.reservedBy).length
+    };
+    
     return res.json({
       success: true,
       count: claims.length,
+      stats: stats,
       claims: claims.map(claim => ({
         code: claim.code,
         eventId: claim.eventId,
@@ -462,6 +583,36 @@ router.get('/admin/list-claims', requireApiKey, async (req, res) => {
     console.error('❌ Error listing claims:', error);
     return res.status(500).json({ 
       error: 'Failed to list claims' 
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/stats
+ * @desc    Get claim statistics (admin only)
+ * @access  Protected (requires API key)
+ */
+router.get('/admin/stats', requireApiKey, async (req, res) => {
+  try {
+    const claims = await db.getAllClaims();
+    
+    const stats = {
+      total: claims.length,
+      used: claims.filter(c => c.used).length,
+      available: claims.filter(c => !c.used).length,
+      reserved: claims.filter(c => c.reservedBy && !c.used).length,
+      percentage_used: ((claims.filter(c => c.used).length / claims.length) * 100).toFixed(2)
+    };
+    
+    return res.json({
+      success: true,
+      stats: stats
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting stats:', error);
+    return res.status(500).json({ 
+      error: 'Failed to get stats' 
     });
   }
 });

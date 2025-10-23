@@ -97,7 +97,8 @@ merch-backend/
 │   └── metadata-service.js   # Metadata generation + IPFS upload
 │
 ├── scripts/                   # Utility scripts
-│   ├── add-sample-claims.js  # Add test claim codes
+│   ├── add-sample-claims.js     # Add test claim codes
+│   ├── generate-bulk-claims.js  # Generate 200-1000 codes at once
 │   ├── test-signature.js     # Test signature generation
 │   └── test-pinata.js        # Test Pinata connection
 │
@@ -159,6 +160,27 @@ merch-backend/
 ---
 
 ## API Endpoints
+
+### Endpoints Summary Table
+
+| Category | Endpoint | Method | Auth | Description |
+|----------|----------|--------|------|-------------|
+| **Public** | `/health` | GET | No | Health check with contract info |
+| **Public** | `/api/token-metadata/:id` | GET | No | Get token metadata (ERC-721) |
+| **Protected** | `/api/verify-code` | POST | Yes | Verify code & generate signature |
+| **Protected** | `/api/claim-offchain` | POST | Yes | Reserve claim without wallet |
+| **Protected** | `/api/redeem-reservation` | POST | Yes | Redeem off-chain reservation |
+| **Protected** | `/api/attest-claim` | POST | Yes | Create EAS attestation |
+| **Admin** | `/api/admin/add-claim` | POST | Yes | Add single claim code |
+| **Admin** | `/api/admin/add-sample-claims` | POST | Yes | Add 10 sample codes |
+| **Admin** | `/api/admin/generate-bulk-claims` | POST | Yes | **Generate 1-1000 codes** 🆕 |
+| **Admin** | `/api/admin/list-claims` | GET | Yes | List all claims with stats |
+| **Admin** | `/api/admin/stats` | GET | Yes | Get statistics overview 🆕 |
+
+**Authentication:** All endpoints marked "Yes" require `X-API-KEY` header.
+
+---
+
 
 ### Public Endpoints
 
@@ -231,7 +253,7 @@ Get token metadata JSON (ERC-721 standard).
 All protected endpoints require the `X-API-KEY` header:
 
 ```bash
-X-API-KEY: c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434xxx
+X-API-KEY: your_api_key_here
 ```
 
 ---
@@ -291,7 +313,7 @@ Verify claim code and generate signature for minting.
 ```bash
 curl -X POST https://merch-backend-ot7l.onrender.com/api/verify-code \
   -H "Content-Type: application/json" \
-  -H "X-API-KEY: c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434xxx" \
+  -H "X-API-KEY: your_api_key_here" \
   -d '{
     "code": "TEST123",
     "walletAddress": "0x742D35cC6634c0532925a3B844BC9E7595F0beBB"
@@ -444,7 +466,7 @@ Add 10 sample claim codes for testing.
 ```bash
 curl -X POST https://merch-backend-ot7l.onrender.com/api/admin/add-sample-claims \
   -H "Content-Type: application/json" \
-  -H "X-API-KEY: c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434127"
+  -H "X-API-KEY: your_api_key_here"
 ```
 
 ---
@@ -486,11 +508,173 @@ List all claims in the database.
 **Example:**
 ```bash
 curl https://merch-backend-ot7l.onrender.com/api/admin/list-claims \
-  -H "X-API-KEY: c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434127"
+  -H "X-API-KEY: your_api_key_here"
 ```
 
 ---
 
+
+#### POST /api/admin/generate-bulk-claims
+
+Generate multiple claim codes at once (1-1000 codes in a single request).
+
+**Authentication:** Required (X-API-KEY)
+
+**Request Body:**
+```json
+{
+  "count": 300,
+  "prefix": "FRONTEND",
+  "eventName": "Base Bootcamp Final Project"
+}
+```
+
+**Parameters:**
+- `count` - Number of codes to generate: 1-1000 (required)
+- `prefix` - Code prefix for organization: e.g., "FRONTEND", "TEST", "BASECAMP" (optional, default: "BULK")
+- `eventName` - Custom event name for all codes (optional, cycles through default events if not provided)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "requested": 300,
+  "created": 300,
+  "failed": 0,
+  "sample_codes": [
+    {"code": "FRONTEND-A1B2C3-0000", "event": "Web3 Summit 2025"},
+    {"code": "FRONTEND-X9Y8Z7-0001", "event": "NFT NYC 2025"},
+    {"code": "FRONTEND-P5Q4R3-0002", "event": "ETH Denver 2025"},
+    {"code": "FRONTEND-M8N7K6-0003", "event": "Token2049 Singapore"},
+    {"code": "FRONTEND-Z5Y4X3-0004", "event": "Consensus Austin"},
+    {"code": "FRONTEND-W2V1U9-0005", "event": "EthCC Paris"},
+    {"code": "FRONTEND-T8S7R6-0006", "event": "DevCon Bangkok"},
+    {"code": "FRONTEND-Q5P4O3-0007", "event": "Base Camp Miami"},
+    {"code": "FRONTEND-N2M1L9-0008", "event": "Blockchain Week NYC"},
+    {"code": "FRONTEND-K8J7I6-0009", "event": "Web3 Conference Dubai"}
+  ],
+  "errors": []
+}
+```
+
+**Error Responses:**
+
+400 - Invalid count:
+```json
+{
+  "error": "Count must be between 1 and 1000"
+}
+```
+
+401 - Invalid API key:
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+**Examples:**
+
+Generate 300 codes for frontend testing:
+```bash
+curl -X POST https://merch-backend-ot7l.onrender.com/api/admin/generate-bulk-claims \
+  -H "Content-Type: application/json" \
+  -H "X-API-KEY: your_api_key_here" \
+  -d '{
+    "count": 300,
+    "prefix": "FRONTEND"
+  }'
+```
+
+Generate 100 codes for specific event:
+```bash
+curl -X POST https://merch-backend-ot7l.onrender.com/api/admin/generate-bulk-claims \
+  -H "Content-Type: application/json" \
+  -H "X-API-KEY: your_api_key_here" \
+  -d '{
+    "count": 100,
+    "prefix": "BASECAMP",
+    "eventName": "Base Bootcamp Final Project"
+  }'
+```
+
+Generate 50 QA test codes:
+```bash
+curl -X POST https://merch-backend-ot7l.onrender.com/api/admin/generate-bulk-claims \
+  -H "Content-Type: application/json" \
+  -H "X-API-KEY: your_api_key_here" \
+  -d '{
+    "count": 50,
+    "prefix": "QA"
+  }'
+```
+
+**Code Format:**
+Generated codes follow this pattern: `PREFIX-RANDOM-NUMBER`
+- PREFIX: Your chosen prefix or "BULK" (uppercase)
+- RANDOM: 6 random alphanumeric characters (uppercase)
+- NUMBER: Sequential 4-digit number padded with zeros (0000-9999)
+
+Examples:
+- `FRONTEND-A1B2C3-0000`
+- `TEST-X9Y8Z7-0125`
+- `BASECAMP-M5N6P7-0500`
+
+**Performance:**
+- Processes in batches of 50 codes
+- Progress logged every 50 codes
+- ~1-3 seconds per 100 codes
+- For 300 codes: ~3-10 seconds total
+
+**Use Cases:**
+1. **Frontend Testing:** Generate codes for development/staging environments
+2. **QA Testing:** Create dedicated test codes with QA prefix
+3. **Event Preparation:** Pre-generate codes before events
+4. **Load Testing:** Generate large batches for performance testing
+5. **Multiple Events:** Generate different prefixes for different events
+
+---
+
+#### GET /api/admin/stats
+
+Get claim code statistics (overview of all claims).
+
+**Authentication:** Required (X-API-KEY)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "stats": {
+    "total": 310,
+    "used": 5,
+    "available": 305,
+    "reserved": 0,
+    "percentage_used": "1.61"
+  }
+}
+```
+
+**Response Fields:**
+- `total` - Total number of claim codes in database
+- `used` - Number of codes that have been claimed
+- `available` - Number of codes still available
+- `reserved` - Number of codes reserved off-chain (not yet claimed)
+- `percentage_used` - Percentage of codes that have been used
+
+**Example:**
+```bash
+curl https://merch-backend-ot7l.onrender.com/api/admin/stats \
+  -H "X-API-KEY: your_api_key_here"
+```
+
+**Use Cases:**
+1. **Monitoring:** Check how many codes are left
+2. **Capacity Planning:** Know when to generate more codes
+3. **Analytics:** Track usage percentage over time
+4. **Dashboard:** Display stats in admin dashboard
+
+---
 ## Environment Configuration
 
 ### Required Environment Variables
@@ -505,10 +689,10 @@ BASE_URL=http://localhost:3000
 
 # ====== SECURITY ======
 # Backend issuer private key (for signature generation only, no funds needed)
-BACKEND_ISSUER_PRIVATE_KEY=0x86025bec599bee8a7302c836abb73aadbedd2df0d7f771b7f850efd65294eaxx
+BACKEND_ISSUER_PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE
 
 # API key for protected endpoints
-API_KEY=c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434127
+API_KEY=your_secure_api_key_here
 
 # ====== BLOCKCHAIN CONFIGURATION ======
 BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
@@ -525,7 +709,7 @@ DATABASE_TYPE=postgres
 
 # PostgreSQL Connection String
 # For local development:
-DATABASE_URL=postgresql://postgres:admin@localhost:5432/merch
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/merch
 
 # For Render (auto-configured):
 # DATABASE_URL=postgresql://merch:xxx@dpg-xxx.oregon-postgres.render.com/merch_b8ol
@@ -535,7 +719,7 @@ DATABASE_URL=postgresql://postgres:admin@localhost:5432/merch
 METADATA_STORAGE_TYPE=ipfs
 
 # Pinata JWT for IPFS uploads (get from https://pinata.cloud)
-PINATA_JWT=eyJhbGciO....
+PINATA_JWT=your_pinata_jwt_here
 ```
 
 ### Production Environment Variables (Render)
@@ -1132,7 +1316,7 @@ Create `.env.local`:
 ```bash
 # Backend API Configuration
 NEXT_PUBLIC_API_URL=https://merch-backend-ot7l.onrender.com
-NEXT_PUBLIC_API_KEY=c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434127
+NEXT_PUBLIC_API_KEY=your_secure_api_key_here
 ```
 
 ### Step 8: Create MiniApp Manifest
@@ -1281,7 +1465,7 @@ curl https://merch-backend-ot7l.onrender.com/health
 ```bash
 curl -X POST https://merch-backend-ot7l.onrender.com/api/verify-code \
   -H "Content-Type: application/json" \
-  -H "X-API-KEY: c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434127" \
+  -H "X-API-KEY: your_api_key_here" \
   -d '{
     "code": "TEST123",
     "walletAddress": "0x742D35cC6634c0532925a3B844BC9E7595F0beBB"
@@ -1292,7 +1476,7 @@ curl -X POST https://merch-backend-ot7l.onrender.com/api/verify-code \
 
 ```bash
 curl https://merch-backend-ot7l.onrender.com/api/admin/list-claims \
-  -H "X-API-KEY: c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434127"
+  -H "X-API-KEY: your_api_key_here"
 ```
 
 ### Frontend Testing
@@ -1401,8 +1585,8 @@ In the Web Service settings:
 
 ```bash
 # Required
-API_KEY=c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434127
-BACKEND_ISSUER_PRIVATE_KEY=0x86025bec599bee8a7302c836abb73aadbedd2df0d7f771b7f850efd65xx
+API_KEY=your_secure_api_key_here
+BACKEND_ISSUER_PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE
 BASE_URL=https://merch-backend-ot7l.onrender.com
 BASIC_MERCH_ADDRESS=0x5eEC061B0A4d5d2Be4aCF831DE73E27e39F442fF
 MERCH_MANAGER_ADDRESS=0x900DB725439Cf512c2647d2B1d327dc9d1D85a6C
@@ -1415,7 +1599,7 @@ DATABASE_URL=postgresql://merch:cNyz3mZ0z4xxx
 
 # IPFS (optional but recommended)
 METADATA_STORAGE_TYPE=ipfs
-PINATA_JWT=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+PINATA_JWT=your_pinata_jwt_here
 
 # RPC
 BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
@@ -2031,7 +2215,7 @@ NODE_ENV=development
 BASE_URL=http://localhost:3000
 
 # ====== SECURITY ======
-BACKEND_ISSUER_PRIVATE_KEY=0x...
+BACKEND_ISSUER_PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE
 API_KEY=...
 
 # ====== BLOCKCHAIN CONFIGURATION ======
@@ -2047,7 +2231,7 @@ DATABASE_URL=postgresql://user:pass@host:5432/database
 
 # ====== METADATA STORAGE ======
 METADATA_STORAGE_TYPE=ipfs
-PINATA_JWT=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+PINATA_JWT=your_pinata_jwt_here
 ```
 
 ### B. PostgreSQL Schema

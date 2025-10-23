@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "test": "node scripts/test-signature.js",
     "test:pinata": "node scripts/test-pinata.js",
-    "add-claims": "node scripts/add-sample-claims.js"
+    "add-claims": "node scripts/add-sample-claims.js",
+    "generate-bulk": "node scripts/generate-bulk-claims.js"
   },
   "keywords": [
     "ethereum",
