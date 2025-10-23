@@ -231,7 +231,7 @@ Get token metadata JSON (ERC-721 standard).
 All protected endpoints require the `X-API-KEY` header:
 
 ```bash
-X-API-KEY: c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434127
+X-API-KEY: c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434xxx
 ```
 
 ---
@@ -291,7 +291,7 @@ Verify claim code and generate signature for minting.
 ```bash
 curl -X POST https://merch-backend-ot7l.onrender.com/api/verify-code \
   -H "Content-Type: application/json" \
-  -H "X-API-KEY: c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434127" \
+  -H "X-API-KEY: c8ad4b0e2f3ddffa1fa410079cb863e4839b8cc65d1147c1aa48ed8b73434xxx" \
   -d '{
     "code": "TEST123",
     "walletAddress": "0x742D35cC6634c0532925a3B844BC9E7595F0beBB"
