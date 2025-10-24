@@ -102,6 +102,10 @@ const eventsRoutes = require('./routes/events');
 app.use('/api', claimsRoutes);
 app.use('/api/events', eventsRoutes);
 
+// Codes generation routes (for Chainlink Automation)
+const codesRoutes = require('./routes/codes');
+app.use('/api', codesRoutes);
+
 // Merch routes
 const merchRoutes = require('./routes/merch');
 app.use('/api', merchRoutes);
