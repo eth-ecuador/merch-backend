@@ -295,6 +295,22 @@ async function getEventsSummary() {
 }
 
 /**
+ * Get token metadata by token ID
+ */
+async function getTokenMetadata(tokenId) {
+  const result = await pool.query(
+    'SELECT metadata FROM claims WHERE token_uri LIKE $1 LIMIT 1',
+    [`%/token-metadata/${tokenId}%`]
+  );
+  
+  if (result.rows.length === 0) {
+    return null;
+  }
+  
+  return result.rows[0].metadata;
+}
+
+/**
  * Close database connection pool
  */
 async function closePool() {
@@ -316,5 +332,6 @@ module.exports = {
   getClaimsPaginated,
   deleteClaimsByEventId,
   getEventsSummary,
+  getTokenMetadata,
   closePool
 };
