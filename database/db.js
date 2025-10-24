@@ -56,6 +56,29 @@ async function initializeDatabase() {
       CREATE INDEX IF NOT EXISTS idx_claims_used_by ON claims(used_by);
     `);
     
+    // Create merch table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS merch (
+        id SERIAL PRIMARY KEY,
+        merch_id VARCHAR(36) UNIQUE NOT NULL,
+        merch_name VARCHAR(255) NOT NULL,
+        merch_description TEXT,
+        image_uri TEXT NOT NULL,
+        ipfs_hash VARCHAR(255),
+        gateway_url TEXT,
+        creator_address VARCHAR(42) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        metadata JSONB
+      )
+    `);
+    
+    // Create indexes for merch table
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_merch_id ON merch(merch_id);
+      CREATE INDEX IF NOT EXISTS idx_merch_creator ON merch(creator_address);
+      CREATE INDEX IF NOT EXISTS idx_merch_created_at ON merch(created_at);
+    `);
+    
     console.log('✅ Database schema initialized\n');
     
   } catch (error) {
@@ -310,6 +333,103 @@ async function getTokenMetadata(tokenId) {
   return result.rows[0].metadata;
 }
 
+// ============ Merch Functions ============
+
+/**
+ * Insert new merch
+ */
+async function insertMerch(merchData) {
+  const { 
+    merch_id, 
+    merch_name, 
+    merch_description, 
+    image_uri, 
+    ipfs_hash, 
+    gateway_url, 
+    creator_address,
+    metadata 
+  } = merchData;
+  
+  const result = await pool.query(
+    `INSERT INTO merch (
+      merch_id, 
+      merch_name, 
+      merch_description, 
+      image_uri, 
+      ipfs_hash, 
+      gateway_url, 
+      creator_address,
+      metadata
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    RETURNING *`,
+    [
+      merch_id, 
+      merch_name, 
+      merch_description, 
+      image_uri, 
+      ipfs_hash, 
+      gateway_url, 
+      creator_address,
+      JSON.stringify(metadata || {})
+    ]
+  );
+  
+  return result.rows[0];
+}
+
+/**
+ * Get merch by ID
+ */
+async function getMerchById(merchId) {
+  const result = await pool.query(
+    'SELECT * FROM merch WHERE merch_id = $1',
+    [merchId]
+  );
+  return result.rows[0];
+}
+
+/**
+ * Get all merch by creator
+ */
+async function getMerchByCreator(creatorAddress) {
+  const result = await pool.query(
+    'SELECT * FROM merch WHERE creator_address = $1 ORDER BY created_at DESC',
+    [creatorAddress]
+  );
+  return result.rows;
+}
+
+/**
+ * Get all merch with pagination
+ */
+async function getAllMerch(limit = 10, offset = 0) {
+  const result = await pool.query(
+    'SELECT * FROM merch ORDER BY created_at DESC LIMIT $1 OFFSET $2',
+    [limit, offset]
+  );
+  
+  const countResult = await pool.query('SELECT COUNT(*) FROM merch');
+  
+  return {
+    merch: result.rows,
+    total: parseInt(countResult.rows[0].count),
+    limit,
+    offset
+  };
+}
+
+/**
+ * Delete merch by ID
+ */
+async function deleteMerch(merchId) {
+  const result = await pool.query(
+    'DELETE FROM merch WHERE merch_id = $1 RETURNING *',
+    [merchId]
+  );
+  return result.rows[0];
+}
+
 /**
  * Close database connection pool
  */
@@ -333,5 +453,11 @@ module.exports = {
   deleteClaimsByEventId,
   getEventsSummary,
   getTokenMetadata,
+  // Merch functions
+  insertMerch,
+  getMerchById,
+  getMerchByCreator,
+  getAllMerch,
+  deleteMerch,
   closePool
 };

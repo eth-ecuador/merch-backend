@@ -102,6 +102,10 @@ const eventsRoutes = require('./routes/events');
 app.use('/api', claimsRoutes);
 app.use('/api/events', eventsRoutes);
 
+// Merch routes
+const merchRoutes = require('./routes/merch');
+app.use('/api', merchRoutes);
+
 // Admin routes
 const adminRoutes = require('./routes/admin');
 app.use('/api/admin', adminRoutes);
