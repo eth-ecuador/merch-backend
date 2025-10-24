@@ -30,6 +30,9 @@ const HISTORICAL_FROM_BLOCK = process.env.HISTORICAL_FROM_BLOCK || 'earliest';
 
 const app = express();
 
+// Trust proxy (required for Render.com and rate limiting)
+app.set('trust proxy', 1);
+
 // Middleware
 app.use(cors());
 app.use(express.json());
