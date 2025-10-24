@@ -1,374 +1,320 @@
-// database/db.js
-// Database abstraction layer - supports in-memory and PostgreSQL
+/**
+ * Database Module - PostgreSQL
+ * 
+ * Funciones para manejar:
+ * - Claims (códigos de acceso)
+ * - Batch inserts optimizados
+ * - Query helpers
+ */
 
 const { Pool } = require('pg');
 
-// ==============================================
-// IN-MEMORY DATABASE (Development)
-// ==============================================
+// ============ Configuration ============
 
-class InMemoryDB {
-  constructor() {
-    this.claims = new Map();
-    this.reservations = new Map();
-    this.tokenMetadata = new Map();
-    console.log('✅ In-memory database initialized');
-  }
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
+// Test connection
+pool.on('connect', () => {
+  console.log('✅ Connected to PostgreSQL database');
+});
+
+pool.on('error', (err) => {
+  console.error('❌ Unexpected database error:', err);
+});
+
+// ============ Schema Initialization ============
+
+async function initializeDatabase() {
+  const client = await pool.connect();
   
-  // Claims
-  async createClaim(claim) {
-    this.claims.set(claim.code, {
-      ...claim,
-      used: false,
-      usedBy: null,
-      usedAt: null,
-      reservedBy: null,
-      createdAt: new Date().toISOString()
-    });
-  }
-  
-  async getClaim(code) {
-    return this.claims.get(code) || null;
-  }
-  
-  async markClaimAsUsed(code, walletAddress) {
-    const claim = this.claims.get(code);
-    if (claim) {
-      claim.used = true;
-      claim.usedBy = walletAddress;
-      claim.usedAt = new Date().toISOString();
-      this.claims.set(code, claim);
-    }
-  }
-  
-  async updateClaimTokenURI(code, tokenURI) {
-    const claim = this.claims.get(code);
-    if (claim) {
-      claim.tokenURI = tokenURI;
-      this.claims.set(code, claim);
-    }
-  }
-  
-  async reserveClaim(code, userIdentifier) {
-    const claim = this.claims.get(code);
-    if (claim) {
-      claim.reservedBy = userIdentifier;
-      this.claims.set(code, claim);
-    }
-  }
-  
-  async getAllClaims() {
-    return Array.from(this.claims.values());
-  }
-  
-  // Reservations
-  async createReservation(reservation) {
-    this.reservations.set(reservation.reservationId, {
-      ...reservation,
-      createdAt: new Date().toISOString()
-    });
-  }
-  
-  async getReservation(reservationId) {
-    return this.reservations.get(reservationId) || null;
-  }
-  
-  async getAllReservations() {
-    return Array.from(this.reservations.values());
-  }
-  
-  // Token Metadata
-  async updateTokenMetadata(tokenId, metadata) {
-    this.tokenMetadata.set(tokenId, {
-      ...metadata,
-      updatedAt: new Date().toISOString()
-    });
-  }
-  
-  async getTokenMetadata(tokenId) {
-    return this.tokenMetadata.get(tokenId) || null;
+  try {
+    console.log('\n📊 Initializing database schema...');
+    
+    // Create claims table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS claims (
+        id SERIAL PRIMARY KEY,
+        code VARCHAR(255) UNIQUE NOT NULL,
+        event_id VARCHAR(66) NOT NULL,
+        token_uri TEXT,
+        used BOOLEAN DEFAULT false,
+        used_by VARCHAR(42),
+        used_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        metadata JSONB
+      )
+    `);
+    
+    // Create indexes for better performance
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_claims_code ON claims(code);
+      CREATE INDEX IF NOT EXISTS idx_claims_event_id ON claims(event_id);
+      CREATE INDEX IF NOT EXISTS idx_claims_used ON claims(used);
+      CREATE INDEX IF NOT EXISTS idx_claims_used_by ON claims(used_by);
+    `);
+    
+    console.log('✅ Database schema initialized\n');
+    
+  } catch (error) {
+    console.error('❌ Error initializing database:', error);
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
-// ==============================================
-// POSTGRESQL DATABASE (Production)
-// ==============================================
+// ============ Claim Functions ============
 
-class PostgresDB {
-  constructor() {
-    this.pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' 
-        ? { rejectUnauthorized: false } 
-        : false
-    });
-    
-    this.initTables();
-    console.log('✅ PostgreSQL database initialized');
+/**
+ * Get claim by code
+ */
+async function getClaim(code) {
+  const result = await pool.query(
+    'SELECT * FROM claims WHERE code = $1',
+    [code]
+  );
+  return result.rows[0];
+}
+
+/**
+ * Get claims by event ID
+ */
+async function getClaimsByEventId(eventId) {
+  const result = await pool.query(
+    'SELECT * FROM claims WHERE event_id = $1 ORDER BY created_at DESC',
+    [eventId]
+  );
+  return result.rows;
+}
+
+/**
+ * Mark claim as used
+ */
+async function markClaimAsUsed(code, walletAddress) {
+  const result = await pool.query(
+    `UPDATE claims 
+     SET used = true, 
+         used_by = $1, 
+         used_at = CURRENT_TIMESTAMP 
+     WHERE code = $2 AND used = false
+     RETURNING *`,
+    [walletAddress, code]
+  );
+  
+  if (result.rows.length === 0) {
+    throw new Error('Claim not found or already used');
   }
   
-  async initTables() {
-    try {
-      // Claims table
-      await this.pool.query(`
-        CREATE TABLE IF NOT EXISTS claims (
-          code VARCHAR(255) PRIMARY KEY,
-          event_id VARCHAR(255) NOT NULL,
-          token_uri TEXT NOT NULL,
-          metadata JSONB,
-          used BOOLEAN DEFAULT FALSE,
-          used_by VARCHAR(255),
-          used_at TIMESTAMP,
-          reserved_by VARCHAR(255),
-          created_at TIMESTAMP DEFAULT NOW()
-        )
-      `);
+  return result.rows[0];
+}
+
+/**
+ * Insert single claim
+ */
+async function insertClaim(claimData) {
+  const { code, event_id, token_uri, metadata } = claimData;
+  
+  const result = await pool.query(
+    `INSERT INTO claims (code, event_id, token_uri, metadata)
+     VALUES ($1, $2, $3, $4)
+     RETURNING *`,
+    [code, event_id, token_uri, JSON.stringify(metadata || {})]
+  );
+  
+  return result.rows[0];
+}
+
+/**
+ * Insert multiple claims in batch (optimized)
+ * 
+ * @param {Array} claims - Array of claim objects
+ * @returns {Promise<number>} Number of inserted claims
+ */
+async function insertClaimsBatch(claims) {
+  if (!claims || claims.length === 0) {
+    return 0;
+  }
+  
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    // Build multi-row insert
+    const values = [];
+    const params = [];
+    let paramIndex = 1;
+    
+    for (const claim of claims) {
+      const { code, event_id, token_uri, metadata } = claim;
       
-      // Reservations table
-      await this.pool.query(`
-        CREATE TABLE IF NOT EXISTS reservations (
-          reservation_id VARCHAR(255) PRIMARY KEY,
-          code VARCHAR(255) NOT NULL,
-          user_identifier VARCHAR(255) NOT NULL,
-          type VARCHAR(50) NOT NULL,
-          event_id VARCHAR(255) NOT NULL,
-          token_uri TEXT NOT NULL,
-          created_at TIMESTAMP DEFAULT NOW()
-        )
-      `);
-      
-      // Token metadata table
-      await this.pool.query(`
-        CREATE TABLE IF NOT EXISTS token_metadata (
-          token_id INTEGER PRIMARY KEY,
-          metadata JSONB NOT NULL,
-          updated_at TIMESTAMP DEFAULT NOW()
-        )
-      `);
-      
-      console.log('✅ PostgreSQL tables initialized');
-    } catch (error) {
-      console.error('❌ Error initializing PostgreSQL tables:', error);
-      throw error;
+      values.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3})`);
+      params.push(code, event_id, token_uri, JSON.stringify(metadata || {}));
+      paramIndex += 4;
     }
-  }
-  
-  // Claims
-  async createClaim(claim) {
-    await this.pool.query(
-      `INSERT INTO claims (code, event_id, token_uri, metadata, used, reserved_by)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [claim.code, claim.eventId, claim.tokenURI, JSON.stringify(claim.metadata || null), false, null]
-    );
-  }
-  
-  async getClaim(code) {
-    const result = await this.pool.query(
-      'SELECT * FROM claims WHERE code = $1',
-      [code]
-    );
     
-    if (result.rows.length === 0) return null;
+    const query = `
+      INSERT INTO claims (code, event_id, token_uri, metadata)
+      VALUES ${values.join(', ')}
+      ON CONFLICT (code) DO NOTHING
+    `;
     
-    const row = result.rows[0];
-    return {
-      code: row.code,
-      eventId: row.event_id,
-      tokenURI: row.token_uri,
-      metadata: row.metadata,
-      used: row.used,
-      usedBy: row.used_by,
-      usedAt: row.used_at,
-      reservedBy: row.reserved_by,
-      createdAt: row.created_at
-    };
-  }
-  
-  async markClaimAsUsed(code, walletAddress) {
-    await this.pool.query(
-      'UPDATE claims SET used = TRUE, used_by = $1, used_at = NOW() WHERE code = $2',
-      [walletAddress, code]
-    );
-  }
-  
-  async updateClaimTokenURI(code, tokenURI) {
-    await this.pool.query(
-      'UPDATE claims SET token_uri = $1 WHERE code = $2',
-      [tokenURI, code]
-    );
-  }
-  
-  async reserveClaim(code, userIdentifier) {
-    await this.pool.query(
-      'UPDATE claims SET reserved_by = $1 WHERE code = $2',
-      [userIdentifier, code]
-    );
-  }
-  
-  async getAllClaims() {
-    const result = await this.pool.query('SELECT * FROM claims ORDER BY created_at DESC');
-    return result.rows.map(row => ({
-      code: row.code,
-      eventId: row.event_id,
-      tokenURI: row.token_uri,
-      metadata: row.metadata,
-      used: row.used,
-      usedBy: row.used_by,
-      usedAt: row.used_at,
-      reservedBy: row.reserved_by,
-      createdAt: row.created_at
-    }));
-  }
-  
-  // Reservations
-  async createReservation(reservation) {
-    await this.pool.query(
-      `INSERT INTO reservations (reservation_id, code, user_identifier, type, event_id, token_uri)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        reservation.reservationId,
-        reservation.code,
-        reservation.userIdentifier,
-        reservation.type,
-        reservation.eventId,
-        reservation.tokenURI
-      ]
-    );
-  }
-  
-  async getReservation(reservationId) {
-    const result = await this.pool.query(
-      'SELECT * FROM reservations WHERE reservation_id = $1',
-      [reservationId]
-    );
+    const result = await client.query(query, params);
     
-    if (result.rows.length === 0) return null;
+    await client.query('COMMIT');
     
-    const row = result.rows[0];
-    return {
-      reservationId: row.reservation_id,
-      code: row.code,
-      userIdentifier: row.user_identifier,
-      type: row.type,
-      eventId: row.event_id,
-      tokenURI: row.token_uri,
-      createdAt: row.created_at
-    };
-  }
-  
-  async getAllReservations() {
-    const result = await this.pool.query('SELECT * FROM reservations ORDER BY created_at DESC');
-    return result.rows.map(row => ({
-      reservationId: row.reservation_id,
-      code: row.code,
-      userIdentifier: row.user_identifier,
-      type: row.type,
-      eventId: row.event_id,
-      tokenURI: row.token_uri,
-      createdAt: row.created_at
-    }));
-  }
-  
-  // Token Metadata
-  async updateTokenMetadata(tokenId, metadata) {
-    await this.pool.query(
-      `INSERT INTO token_metadata (token_id, metadata, updated_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (token_id) 
-       DO UPDATE SET metadata = $2, updated_at = NOW()`,
-      [tokenId, JSON.stringify(metadata)]
-    );
-  }
-  
-  async getTokenMetadata(tokenId) {
-    const result = await this.pool.query(
-      'SELECT metadata FROM token_metadata WHERE token_id = $1',
-      [tokenId]
-    );
+    return result.rowCount;
     
-    if (result.rows.length === 0) return null;
-    
-    return result.rows[0].metadata;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Error in batch insert:', error);
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
-// ==============================================
-// DATABASE FACTORY
-// ==============================================
-
-let dbInstance = null;
-
-async function getDB() {
-  if (dbInstance) return dbInstance;
+/**
+ * Get stats
+ */
+async function getStats() {
+  const result = await pool.query(`
+    SELECT 
+      COUNT(*) as total,
+      COUNT(*) FILTER (WHERE used = true) as used,
+      COUNT(*) FILTER (WHERE used = false) as available
+    FROM claims
+  `);
   
-  const dbType = process.env.DATABASE_TYPE || 'memory';
+  const stats = result.rows[0];
   
-  if (dbType === 'postgres') {
-    dbInstance = new PostgresDB();
-  } else {
-    dbInstance = new InMemoryDB();
-  }
-  
-  return dbInstance;
+  return {
+    total: parseInt(stats.total),
+    used: parseInt(stats.used),
+    available: parseInt(stats.available),
+    percentage_used: stats.total > 0 
+      ? ((stats.used / stats.total) * 100).toFixed(2)
+      : '0.00'
+  };
 }
 
-// ==============================================
-// EXPORTED INTERFACE
-// ==============================================
+/**
+ * Get claims with pagination
+ */
+async function getClaimsPaginated(limit = 10, offset = 0, filters = {}) {
+  let query = 'SELECT * FROM claims WHERE 1=1';
+  const params = [];
+  let paramIndex = 1;
+  
+  // Apply filters
+  if (filters.event_id) {
+    query += ` AND event_id = $${paramIndex}`;
+    params.push(filters.event_id);
+    paramIndex++;
+  }
+  
+  if (filters.used !== undefined) {
+    query += ` AND used = $${paramIndex}`;
+    params.push(filters.used);
+    paramIndex++;
+  }
+  
+  if (filters.used_by) {
+    query += ` AND used_by = $${paramIndex}`;
+    params.push(filters.used_by);
+    paramIndex++;
+  }
+  
+  // Add ordering and pagination
+  query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+  params.push(limit, offset);
+  
+  const result = await pool.query(query, params);
+  
+  // Get total count
+  let countQuery = 'SELECT COUNT(*) FROM claims WHERE 1=1';
+  const countParams = params.slice(0, -2); // Remove LIMIT and OFFSET
+  
+  if (filters.event_id) {
+    countQuery += ' AND event_id = $1';
+  }
+  if (filters.used !== undefined) {
+    countQuery += ` AND used = $${countParams.length}`;
+  }
+  if (filters.used_by) {
+    countQuery += ` AND used_by = $${countParams.length}`;
+  }
+  
+  const countResult = await pool.query(countQuery, countParams);
+  
+  return {
+    claims: result.rows,
+    total: parseInt(countResult.rows[0].count),
+    limit,
+    offset
+  };
+}
+
+/**
+ * Delete claims by event ID (admin only)
+ */
+async function deleteClaimsByEventId(eventId) {
+  const result = await pool.query(
+    'DELETE FROM claims WHERE event_id = $1 RETURNING *',
+    [eventId]
+  );
+  return result.rowCount;
+}
+
+/**
+ * Get events summary
+ */
+async function getEventsSummary() {
+  const result = await pool.query(`
+    SELECT 
+      event_id,
+      COUNT(*) as total_codes,
+      COUNT(*) FILTER (WHERE used = true) as used_codes,
+      COUNT(*) FILTER (WHERE used = false) as available_codes,
+      MIN(created_at) as created_at
+    FROM claims
+    GROUP BY event_id
+    ORDER BY created_at DESC
+  `);
+  
+  return result.rows.map(row => ({
+    event_id: row.event_id,
+    total_codes: parseInt(row.total_codes),
+    used_codes: parseInt(row.used_codes),
+    available_codes: parseInt(row.available_codes),
+    created_at: row.created_at
+  }));
+}
+
+/**
+ * Close database connection pool
+ */
+async function closePool() {
+  await pool.end();
+  console.log('✅ Database connection pool closed');
+}
+
+// ============ Export ============
 
 module.exports = {
-  async createClaim(claim) {
-    const db = await getDB();
-    return db.createClaim(claim);
-  },
-  
-  async getClaim(code) {
-    const db = await getDB();
-    return db.getClaim(code);
-  },
-  
-  async markClaimAsUsed(code, walletAddress) {
-    const db = await getDB();
-    return db.markClaimAsUsed(code, walletAddress);
-  },
-  
-  async updateClaimTokenURI(code, tokenURI) {
-    const db = await getDB();
-    return db.updateClaimTokenURI(code, tokenURI);
-  },
-  
-  async reserveClaim(code, userIdentifier) {
-    const db = await getDB();
-    return db.reserveClaim(code, userIdentifier);
-  },
-  
-  async getAllClaims() {
-    const db = await getDB();
-    return db.getAllClaims();
-  },
-  
-  async createReservation(reservation) {
-    const db = await getDB();
-    return db.createReservation(reservation);
-  },
-  
-  async getReservation(reservationId) {
-    const db = await getDB();
-    return db.getReservation(reservationId);
-  },
-  
-  async getAllReservations() {
-    const db = await getDB();
-    return db.getAllReservations();
-  },
-  
-  async updateTokenMetadata(tokenId, metadata) {
-    const db = await getDB();
-    return db.updateTokenMetadata(tokenId, metadata);
-  },
-  
-  async getTokenMetadata(tokenId) {
-    const db = await getDB();
-    return db.getTokenMetadata(tokenId);
-  }
+  pool,
+  initializeDatabase,
+  getClaim,
+  getClaimsByEventId,
+  markClaimAsUsed,
+  insertClaim,
+  insertClaimsBatch,
+  getStats,
+  getClaimsPaginated,
+  deleteClaimsByEventId,
+  getEventsSummary,
+  closePool
 };

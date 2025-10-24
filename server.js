@@ -1,163 +1,92 @@
-// server.js
-// Merch MVP Backend API - Production Ready for Render
-// Handles signature generation, claim verification, and EAS attestations
+/**
+ * Merch MVP Backend Server
+ * 
+ * Features:
+ * - Signature-based minting
+ * - IPFS image upload (Pinata)
+ * - Event listener (auto code generation)
+ * - Admin endpoints
+ */
 
 require('dotenv').config();
 const express = require('express');
-const { ethers } = require('ethers');
 const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 
-// Import routes
-const claimRoutes = require('./routes/claims');
-const metadataRoutes = require('./routes/metadata');
-const attestationRoutes = require('./routes/attestations');
+const db = require('./database/db');
+const { getListenerService } = require('./services/event-listener');
 
-// Initialize Express
-const app = express();
+// ============ Configuration ============
+
 const PORT = process.env.PORT || 3000;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
-// ==============================================
-// CONFIGURATION & VALIDATION
-// ==============================================
+const ENABLE_EVENT_LISTENER = process.env.ENABLE_EVENT_LISTENER === 'true';
+const PROCESS_HISTORICAL_EVENTS = process.env.PROCESS_HISTORICAL_EVENTS === 'true';
+const HISTORICAL_FROM_BLOCK = process.env.HISTORICAL_FROM_BLOCK || 'earliest';
 
-// Validate required environment variables
-const requiredEnvVars = [
-  'BACKEND_ISSUER_PRIVATE_KEY',
-  'API_KEY',
-  'BASE_SEPOLIA_RPC_URL',
-  'BASIC_MERCH_ADDRESS',
-  'MERCH_MANAGER_ADDRESS',
-  'EAS_INTEGRATION_ADDRESS'
-];
+// ============ Express App ============
 
-for (const envVar of requiredEnvVars) {
-  if (!process.env[envVar]) {
-    console.error(`❌ Missing required environment variable: ${envVar}`);
-    process.exit(1);
-  }
-}
+const app = express();
 
-// Initialize Backend Issuer Wallet
-let backendWallet;
-try {
-  backendWallet = new ethers.Wallet(process.env.BACKEND_ISSUER_PRIVATE_KEY);
-  console.log('✅ Backend Issuer Wallet initialized:', backendWallet.address);
-} catch (error) {
-  console.error('❌ Invalid BACKEND_ISSUER_PRIVATE_KEY:', error.message);
-  process.exit(1);
-}
-
-// Initialize Provider
-const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
-const connectedWallet = backendWallet.connect(provider);
-
-// Contract ABIs
-const BASIC_MERCH_ABI = [
-  'function backendIssuer() view returns (address)',
-  'function mintSBT(address _to, uint256 _eventId, string _tokenURI, bytes _signature) external returns (uint256)'
-];
-
-const EAS_INTEGRATION_ABI = [
-  'function createAttendanceAttestation(bytes32 _eventId, address _attendee, uint256 _tokenId, bool _isPremiumUpgrade) external returns (bytes32)'
-];
-
-// Initialize Contract Instances
-const basicMerchContract = new ethers.Contract(
-  process.env.BASIC_MERCH_ADDRESS,
-  BASIC_MERCH_ABI,
-  provider
-);
-
-const easContract = new ethers.Contract(
-  process.env.EAS_INTEGRATION_ADDRESS,
-  EAS_INTEGRATION_ABI,
-  connectedWallet
-);
-
-// Make available globally
-global.backendWallet = backendWallet;
-global.provider = provider;
-global.connectedWallet = connectedWallet;
-global.basicMerchContract = basicMerchContract;
-global.easContract = easContract;
-
-// ==============================================
-// MIDDLEWARE
-// ==============================================
-
-// Security
-app.use(helmet());
-
-// CORS Configuration
-const corsOptions = {
-  origin: process.env.ALLOWED_ORIGINS 
-    ? process.env.ALLOWED_ORIGINS.split(',') 
-    : '*',
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'X-API-KEY']
-};
-app.use(cors(corsOptions));
-
-// Body Parser
+// Middleware
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Logging
-app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
-
-// Rate Limiting
+// Rate limiting
 const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 900000, // 15 minutes
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 min
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
-  message: { error: 'Too many requests, please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
+  message: 'Too many requests from this IP, please try again later'
 });
-app.use(limiter);
 
-// API Key Authentication Middleware
-const requireApiKey = (req, res, next) => {
-  const apiKey = req.headers['x-api-key'];
+app.use('/api/', limiter);
+
+// ============ Routes ============
+
+// Health check
+app.get('/health', (req, res) => {
+  let backendIssuer = null;
   
-  if (!apiKey || apiKey !== process.env.API_KEY) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  if (process.env.BACKEND_ISSUER_PRIVATE_KEY) {
+    try {
+      const { Wallet } = require('ethers');
+      backendIssuer = new Wallet(process.env.BACKEND_ISSUER_PRIVATE_KEY).address;
+    } catch (error) {
+      console.error('Error getting backend issuer address:', error.message);
+    }
   }
   
-  next();
-};
+  res.json({
+    status: 'ok',
+    environment: NODE_ENV,
+    timestamp: new Date().toISOString(),
+    backendIssuer,
+    contractConfigured: !!process.env.MERCH_MANAGER_ADDRESS,
+    features: {
+      eventListener: ENABLE_EVENT_LISTENER,
+      imageUpload: !!process.env.PINATA_JWT,
+      dynamicEvents: true
+    }
+  });
+});
 
-// ==============================================
-// ROUTES
-// ==============================================
-
-// Health Check (no auth required)
-app.get('/health', async (req, res) => {
-  try {
-    // Check contract configuration
-    const configuredIssuer = await basicMerchContract.backendIssuer();
-    const isConfigured = configuredIssuer.toLowerCase() === backendWallet.address.toLowerCase();
-    
-    res.json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      backendIssuer: backendWallet.address,
-      contractConfigured: isConfigured,
-      network: {
-        name: 'Base Sepolia',
-        chainId: 84532,
-        rpcUrl: process.env.BASE_SEPOLIA_RPC_URL
-      },
-      contracts: {
-        basicMerch: process.env.BASIC_MERCH_ADDRESS,
-        merchManager: process.env.MERCH_MANAGER_ADDRESS,
-        easIntegration: process.env.EAS_INTEGRATION_ADDRESS
-      }
+// Event listener health check
+app.get('/health/listener', async (req, res) => {
+  if (!ENABLE_EVENT_LISTENER) {
+    return res.json({
+      status: 'disabled',
+      message: 'Event listener is disabled in configuration'
     });
+  }
+  
+  try {
+    const listener = getListenerService();
+    const health = await listener.healthCheck();
+    res.json(health);
   } catch (error) {
-    console.error('Health check error:', error);
     res.status(500).json({
       status: 'error',
       message: error.message
@@ -165,73 +94,137 @@ app.get('/health', async (req, res) => {
   }
 });
 
+// Import route modules
+const claimsRoutes = require('./routes/claims');
+const eventsRoutes = require('./routes/events');
+
 // Mount routes
-app.use('/api', claimRoutes);
-app.use('/api', metadataRoutes);
-app.use('/api', attestationRoutes);
+app.use('/api', claimsRoutes);
+app.use('/api/events', eventsRoutes);
 
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({
-    name: 'Merch MVP API',
-    version: '1.0.0',
-    description: 'Backend API for signature-based NFT minting',
-    endpoints: {
-      health: 'GET /health',
-      verifyClaim: 'POST /api/verify-code',
-      claimOffchain: 'POST /api/claim-offchain',
-      redeemReservation: 'POST /api/redeem-reservation',
-      attestClaim: 'POST /api/attest-claim',
-      tokenMetadata: 'GET /api/token-metadata/:id'
-    },
-    documentation: 'https://github.com/your-repo/docs'
-  });
-});
+// Admin routes
+const adminRoutes = require('./routes/admin');
+app.use('/api/admin', adminRoutes);
 
-// 404 Handler
+// Metadata routes (if exists)
+try {
+  const metadataRoutes = require('./routes/metadata');
+  app.use('/api', metadataRoutes);
+} catch (e) {
+  console.log('⚠️  Metadata routes not found - skipping');
+}
+
+// Attestation routes (if exists)
+try {
+  const attestationRoutes = require('./routes/attestations');
+  app.use('/api', attestationRoutes);
+} catch (e) {
+  console.log('⚠️  Attestation routes not found - skipping');
+}
+
+// 404 handler
 app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
+  res.status(404).json({
+    error: 'Endpoint not found',
+    path: req.path,
+    method: req.method
+  });
 });
 
-// Global Error Handler
+// Error handler
 app.use((err, req, res, next) => {
-  console.error('Global error handler:', err);
-  res.status(err.status || 500).json({
-    error: err.message || 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  console.error('❌ Server error:', err);
+  
+  res.status(500).json({
+    error: 'Internal server error',
+    message: NODE_ENV === 'development' ? err.message : 'Something went wrong'
   });
 });
 
-// ==============================================
-// SERVER START
-// ==============================================
+// ============ Startup ============
 
-app.listen(PORT, () => {
-  console.log('\n===========================================');
-  console.log('🚀 Merch MVP Backend API');
-  console.log('===========================================');
-  console.log(`📡 Server running on port ${PORT}`);
-  console.log(`🔑 Backend Issuer: ${backendWallet.address}`);
-  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`📋 API Key: ${process.env.API_KEY ? '✓ Configured' : '✗ Missing'}`);
-  console.log('===========================================');
-  console.log('Available endpoints:');
-  console.log('  GET  /health');
-  console.log('  POST /api/verify-code');
-  console.log('  POST /api/claim-offchain');
-  console.log('  POST /api/redeem-reservation');
-  console.log('  POST /api/attest-claim');
-  console.log('  GET  /api/token-metadata/:id');
-  console.log('===========================================\n');
+async function startServer() {
+  try {
+    console.log('\n🚀 Starting Merch MVP Backend...\n');
+    
+    // Initialize database
+    await db.initializeDatabase();
+    
+    // Initialize event listener (if enabled)
+    if (ENABLE_EVENT_LISTENER) {
+      console.log('🎧 Initializing Event Listener Service...');
+      
+      const listener = getListenerService();
+      await listener.initialize();
+      
+      // Process historical events (if enabled)
+      if (PROCESS_HISTORICAL_EVENTS) {
+        await listener.processHistoricalEvents(HISTORICAL_FROM_BLOCK);
+      }
+      
+      // Start listening for new events
+      await listener.startListening();
+      
+      console.log('════════════════════════════════════════');
+      console.log('🎉 BACKEND LISTO PARA RECIBIR EVENTOS');
+      console.log('════════════════════════════════════════\n');
+    } else {
+      console.log('⚠️  Event Listener is disabled\n');
+    }
+    
+    // Start HTTP server
+    app.listen(PORT, () => {
+      console.log('✅ Server running on port', PORT);
+      console.log('📍 Base URL:', BASE_URL);
+      console.log('🌐 Environment:', NODE_ENV);
+      console.log('\n════════════════════════════════════════');
+      console.log('📋 Available Endpoints:');
+      console.log('════════════════════════════════════════');
+      console.log('GET    /health');
+      console.log('GET    /health/listener');
+      console.log('POST   /api/verify-code');
+      console.log('POST   /api/events/upload-image');
+      console.log('GET    /api/events/image/:hash');
+      console.log('GET    /api/admin/stats');
+      console.log('GET    /api/admin/list-claims');
+      console.log('GET    /api/admin/events-summary');
+      console.log('════════════════════════════════════════\n');
+    });
+    
+  } catch (error) {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// ============ Graceful Shutdown ============
+
+process.on('SIGTERM', async () => {
+  console.log('\n🛑 SIGTERM received, shutting down gracefully...');
+  
+  if (ENABLE_EVENT_LISTENER) {
+    const listener = getListenerService();
+    listener.stopListening();
+  }
+  
+  await db.closePool();
+  process.exit(0);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully...');
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
-  });
+process.on('SIGINT', async () => {
+  console.log('\n🛑 SIGINT received, shutting down gracefully...');
+  
+  if (ENABLE_EVENT_LISTENER) {
+    const listener = getListenerService();
+    listener.stopListening();
+  }
+  
+  await db.closePool();
+  process.exit(0);
 });
+
+// ============ Start ============
+
+startServer();
 
 module.exports = app;
